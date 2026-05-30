@@ -24,6 +24,11 @@ LOGIN_START_JITTER_SECONDS = float(os.getenv("LOGIN_START_JITTER_SECONDS", "2.5"
 EMAIL_TYPE_DELAY_MS = int(os.getenv("EMAIL_TYPE_DELAY_MS", "80"))
 POST_EMAIL_TYPE_PAUSE_SECONDS = float(os.getenv("POST_EMAIL_TYPE_PAUSE_SECONDS", "0.4"))
 EMAIL_TYPE_ATTEMPTS = int(os.getenv("EMAIL_TYPE_ATTEMPTS", "2"))
+HEADLESS = os.getenv("HEADLESS", "1").strip().lower() not in {"0", "false", "no"}
+BROWSER_CHANNEL = os.getenv("BROWSER_CHANNEL", "chrome").strip()
+USER_AGENT = os.getenv("USER_AGENT", "").strip()
+BROWSER_VIEWPORT_WIDTH = int(os.getenv("BROWSER_VIEWPORT_WIDTH", "1366"))
+BROWSER_VIEWPORT_HEIGHT = int(os.getenv("BROWSER_VIEWPORT_HEIGHT", "768"))
 
 # Link lấy mã đăng nhập mới. Trang này chỉ cần điền email và bấm nút lấy mã.
 ACCESS_INFO_URL = "https://zx4nxt_bot_1.opomail.store/login?key=e9ebba329687"
@@ -214,6 +219,91 @@ def slow_fill_input(locator, value: str, *, delay_ms: int = EMAIL_TYPE_DELAY_MS)
 
     return False
 
+OTP_INPUT_SELECTORS = [
+    "input[name='challengeOtp']",
+    "input[data-uia='field-login-code']",
+    "input[data-uia='field-otp']",
+    "input[autocomplete='one-time-code']",
+    "input[inputmode='numeric']",
+    "input[type='tel']",
+]
+
+PASSWORD_INPUT_SELECTORS = [
+    "input[name='password']",
+    "input[data-uia='field-password']",
+    "input[type='password']",
+]
+
+SIGN_IN_CODE_BUTTON_SELECTORS = [
+    "button[data-uia='login-toggle-button']",
+    "a[data-uia='login-toggle-button']",
+    "button:has-text('Sử dụng mã đăng nhập')",
+    "button:has-text('Dùng mã đăng nhập')",
+    "button:has-text('Đăng nhập bằng mã')",
+    "button:has-text('Use a sign-in code')",
+    "button:has-text('Sign in with a code')",
+    "button:has-text('Sign in with code')",
+    "a:has-text('Sử dụng mã đăng nhập')",
+    "a:has-text('Dùng mã đăng nhập')",
+    "a:has-text('Đăng nhập bằng mã')",
+    "a:has-text('Use a sign-in code')",
+    "a:has-text('Sign in with a code')",
+    "a:has-text('Sign in with code')",
+]
+
+def first_visible_optional(page, selectors: list[str], *, timeout_ms: int = 750):
+    """Trả về locator visible đầu tiên hoặc None nếu không thấy trong thời gian ngắn."""
+    try:
+        return first_visible_locator(page, selectors, timeout_ms=timeout_ms)
+    except Exception:
+        return None
+
+def click_sign_in_code_option(page, email: str) -> bool:
+    """Chuyển form Netflix từ mật khẩu sang mã đăng nhập nếu nút/toggle đang hiển thị."""
+    toggle = first_visible_optional(page, SIGN_IN_CODE_BUTTON_SELECTORS, timeout_ms=1500)
+    if not toggle:
+        return False
+
+    try:
+        toggle.scroll_into_view_if_needed(timeout=1000)
+        toggle.click(force=True)
+        time.sleep(1)
+        print(f"🔁 {email}: Đã chuyển form Netflix sang đăng nhập bằng mã.")
+        return True
+    except Exception:
+        return False
+
+def wait_for_netflix_otp_or_error(page, email: str):
+    """Chờ ô mã OTP; nếu Netflix tự chuyển sang password thì thử bấm tùy chọn đăng nhập bằng mã."""
+    deadline = time.time() + (WAIT_OTP_TIMEOUT / 1000)
+    tried_code_toggle = False
+
+    while time.time() < deadline:
+        otp_input = first_visible_optional(page, OTP_INPUT_SELECTORS, timeout_ms=500)
+        if otp_input:
+            return True, None
+
+        password_input = first_visible_optional(page, PASSWORD_INPUT_SELECTORS, timeout_ms=300)
+        if password_input and not tried_code_toggle:
+            tried_code_toggle = True
+            if click_sign_in_code_option(page, email):
+                continue
+
+        msg = _extract_netflix_message_pw(page)
+        if msg and is_netflix_proxy_block_message(msg):
+            return False, msg
+
+        time.sleep(0.5)
+
+    if first_visible_optional(page, PASSWORD_INPUT_SELECTORS, timeout_ms=300):
+        if click_sign_in_code_option(page, email):
+            otp_input = first_visible_optional(page, OTP_INPUT_SELECTORS, timeout_ms=5000)
+            if otp_input:
+                return True, None
+        return False, "Mail yêu cầu mật khẩu hoặc Netflix không cho đăng nhập bằng mã"
+
+    return False, _extract_netflix_message_pw(page) or "Không hiện ô nhập mã (Timeout)"
+
 def fill_netflix_email(page, email: str) -> bool:
     """Điền email vào mọi biến thể ô email Netflix đang hiển thị."""
     email_selectors = [
@@ -230,17 +320,12 @@ def fill_netflix_email(page, email: str) -> bool:
         "input#id_userLoginId",
     ]
 
-    for selector in email_selectors:
-        try:
-            loc = page.locator(selector).first
-            loc.wait_for(state="visible", timeout=5000)
-            loc.scroll_into_view_if_needed(timeout=1000)
-            if slow_fill_input(loc, email):
-                return True
-        except Exception:
-            continue
-
-    return False
+    try:
+        loc = first_visible_locator(page, email_selectors, timeout_ms=8000)
+        loc.scroll_into_view_if_needed(timeout=1000)
+        return slow_fill_input(loc, email)
+    except Exception:
+        return False
 
 def click_netflix_continue(page) -> bool:
     """Bấm nút tiếp tục/đăng nhập trên form Netflix hiện tại."""
@@ -318,25 +403,31 @@ def netflix_continue_wait_otp(page, email: str):
             if not fill_netflix_email(page, email):
                 return False, "SKIPPED: Không tìm thấy ô nhập email Netflix"
 
+        # Netflix gần đây có thể mở form mật khẩu mặc định. Chuyển sang mã trước
+        # khi submit để tránh bị skip nhầm là "Mail yêu cầu mật khẩu".
+        if first_visible_optional(page, PASSWORD_INPUT_SELECTORS, timeout_ms=500):
+            click_sign_in_code_option(page, email)
+
         if not click_netflix_continue(page):
             return False, "SKIPPED: Không tìm thấy nút Tiếp tục Netflix"
 
         print(f"⏳ {email}: Đã nhập email, đang chờ ô nhập mã xuất hiện...")
 
-        try:
-            otp_input = page.locator("input[name='challengeOtp']").first
-            otp_input.wait_for(state="visible", timeout=WAIT_OTP_TIMEOUT)
+        ok, wait_msg = wait_for_netflix_otp_or_error(page, email)
+        if ok:
             return True, None
-        except PWTimeout:
-            if page.locator("input[name='password']").is_visible():
-                return False, "SKIPPED: Mail yêu cầu mật khẩu"
-            msg = _extract_netflix_message_pw(page)
-            if msg:
-                reason = "netflix_proxy_block" if is_netflix_proxy_block_message(msg) else "netflix_error"
-                save_debug_artifacts(page, email, reason)
-                return False, f"SKIPPED: Lỗi Netflix ({msg})"
-            save_debug_artifacts(page, email, "otp_timeout")
-            return False, "SKIPPED: Không hiện ô nhập mã (Timeout)"
+
+        if wait_msg and is_netflix_proxy_block_message(wait_msg):
+            save_debug_artifacts(page, email, "netflix_proxy_block")
+            return False, f"SKIPPED: Lỗi Netflix ({wait_msg})"
+        if wait_msg and "mật khẩu" in wait_msg.lower():
+            save_debug_artifacts(page, email, "password_required")
+            return False, f"SKIPPED: {wait_msg}"
+        if wait_msg:
+            save_debug_artifacts(page, email, "netflix_error")
+            return False, f"SKIPPED: Lỗi Netflix ({wait_msg})"
+        save_debug_artifacts(page, email, "otp_timeout")
+        return False, "SKIPPED: Không hiện ô nhập mã (Timeout)"
 
     except Exception as e:
         return False, f"Error: {str(e)}"
@@ -455,8 +546,8 @@ def get_and_paste_code_until_browse(netflix_page, access_page) -> bool:
     if not code_digits or len(code_digits) < 4:
         return False
 
-    otp = netflix_page.locator("input[name='challengeOtp']").first
-    if otp.is_visible():
+    otp = first_visible_optional(netflix_page, OTP_INPUT_SELECTORS, timeout_ms=3000)
+    if otp:
         otp.fill(code_digits)
         try:
             otp.press("Enter", timeout=1000)
@@ -492,25 +583,33 @@ def _login_once_to_browse(data_package):
     try:
         with sync_playwright() as p:
             launch_args = {
-                "headless": True,
-                "channel": "chrome",
+                "headless": HEADLESS,
                 "args": [
                     "--start-maximized",
                     "--disable-blink-features=AutomationControlled",
                     "--disable-infobars",
+                    "--disable-dev-shm-usage",
                     "--no-sandbox"
                 ]
             }
+            if BROWSER_CHANNEL:
+                launch_args["channel"] = BROWSER_CHANNEL
             if proxy_config:
                 launch_args["proxy"] = proxy_config
 
             browser = p.chromium.launch(**launch_args)
 
-            context = browser.new_context(
-                viewport=None,
-                locale="vi-VN",
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-            )
+            context_args = {
+                "viewport": {"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
+                "locale": "vi-VN",
+                "timezone_id": "Asia/Ho_Chi_Minh",
+            }
+            # Mặc định để Playwright/Chrome tự dùng user-agent thật của trình duyệt đang cài.
+            # Nếu cần test UA riêng: set env USER_AGENT="...".
+            if USER_AGENT:
+                context_args["user_agent"] = USER_AGENT
+
+            context = browser.new_context(**context_args)
             context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             netflix_page = context.new_page()
