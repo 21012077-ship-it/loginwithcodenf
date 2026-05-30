@@ -21,6 +21,9 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 MAX_CONCURRENT_PROCESSES = int(os.getenv("MAX_CONCURRENT_PROCESSES", "3"))
 WAIT_OTP_TIMEOUT = int(os.getenv("WAIT_OTP_TIMEOUT", "15000"))
 LOGIN_START_JITTER_SECONDS = float(os.getenv("LOGIN_START_JITTER_SECONDS", "2.5"))
+EMAIL_TYPE_DELAY_MS = int(os.getenv("EMAIL_TYPE_DELAY_MS", "80"))
+POST_EMAIL_TYPE_PAUSE_SECONDS = float(os.getenv("POST_EMAIL_TYPE_PAUSE_SECONDS", "0.4"))
+EMAIL_TYPE_ATTEMPTS = int(os.getenv("EMAIL_TYPE_ATTEMPTS", "2"))
 
 # Link lấy mã đăng nhập mới. Trang này chỉ cần điền email và bấm nút lấy mã.
 ACCESS_INFO_URL = "https://zx4nxt_bot_1.opomail.store/login?key=e9ebba329687"
@@ -168,6 +171,22 @@ def _extract_netflix_message_pw(page) -> str | None:
             pass
     return None
 
+def slow_fill_input(locator, value: str, *, delay_ms: int = EMAIL_TYPE_DELAY_MS) -> bool:
+    """Xóa ô nhập rồi gõ chậm từng ký tự để tránh website bỏ sót email."""
+    expected = value.strip()
+
+    for _ in range(max(1, EMAIL_TYPE_ATTEMPTS)):
+        locator.click(force=True)
+        locator.press("Control+A")
+        locator.press("Backspace")
+        locator.type(expected, delay=max(0, delay_ms))
+        if POST_EMAIL_TYPE_PAUSE_SECONDS > 0:
+            time.sleep(POST_EMAIL_TYPE_PAUSE_SECONDS)
+        if locator.input_value(timeout=1000).strip().lower() == expected.lower():
+            return True
+
+    return False
+
 def fill_netflix_email(page, email: str) -> bool:
     """Điền email vào mọi biến thể ô email Netflix đang hiển thị."""
     email_selectors = [
@@ -189,10 +208,7 @@ def fill_netflix_email(page, email: str) -> bool:
             loc = page.locator(selector).first
             loc.wait_for(state="visible", timeout=5000)
             loc.scroll_into_view_if_needed(timeout=1000)
-            loc.click(force=True)
-            loc.fill("")
-            loc.fill(email)
-            if loc.input_value(timeout=1000).strip().lower() == email.strip().lower():
+            if slow_fill_input(loc, email):
                 return True
         except Exception:
             continue
@@ -307,8 +323,8 @@ def access_info_prepare_search(access_page, email: str):
             access_page.locator("input[type='email']")
         ).first
         email_input.wait_for(state="visible", timeout=15000)
-        email_input.click(force=True)
-        email_input.fill(email)
+        if not slow_fill_input(email_input, email):
+            print(f"⚠️ {email}: Ô lấy mã chưa nhận đủ email, sẽ thử bấm lấy mã với giá trị hiện tại.")
 
         fetch_button = access_page.locator("#btn-fetch").or_(
             access_page.locator("button:has-text('Retrieve Access Info')")
