@@ -171,6 +171,33 @@ def _extract_netflix_message_pw(page) -> str | None:
             pass
     return None
 
+
+def first_visible_locator(page, selectors: list[str], *, timeout_ms: int = 15000):
+    """Trả về locator đầu tiên thật sự đang hiển thị trong danh sách selector.
+
+    Playwright `.or_().first` lấy phần tử đầu tiên theo DOM, nên nếu trang còn
+    giữ một input email ẩn trước input thật thì `wait_for(state="visible")` sẽ
+    timeout dù selector đã match đúng. Hàm này duyệt từng phần tử match được và
+    chỉ chọn phần tử đang visible.
+    """
+    deadline = time.time() + (timeout_ms / 1000)
+    last_error = None
+
+    while time.time() < deadline:
+        for selector in selectors:
+            try:
+                locators = page.locator(selector)
+                for index in range(locators.count()):
+                    loc = locators.nth(index)
+                    if loc.is_visible(timeout=250):
+                        return loc
+            except Exception as e:
+                last_error = e
+        time.sleep(0.25)
+
+    detail = f"; lỗi cuối: {last_error}" if last_error else ""
+    raise PWTimeout(f"Không tìm thấy phần tử visible cho selectors: {selectors}{detail}")
+
 def slow_fill_input(locator, value: str, *, delay_ms: int = EMAIL_TYPE_DELAY_MS) -> bool:
     """Xóa ô nhập rồi gõ chậm từng ký tự để tránh website bỏ sót email."""
     expected = value.strip()
@@ -319,20 +346,38 @@ def access_info_prepare_search(access_page, email: str):
     try:
         access_page.goto(ACCESS_INFO_URL, wait_until="domcontentloaded")
 
-        email_input = access_page.locator("#email-input").or_(
-            access_page.locator("input[type='email']")
-        ).first
-        email_input.wait_for(state="visible", timeout=15000)
+        email_input = first_visible_locator(
+            access_page,
+            [
+                "#email-input",
+                "#login-email-input",
+                "input[type='email']",
+                "input[placeholder='your@email.com']",
+                "input[autocomplete='email']",
+                "input[name='email']",
+            ],
+            timeout_ms=15000,
+        )
+        email_input.scroll_into_view_if_needed(timeout=1000)
         if not slow_fill_input(email_input, email):
             print(f"⚠️ {email}: Ô lấy mã chưa nhận đủ email, sẽ thử bấm lấy mã với giá trị hiện tại.")
 
-        fetch_button = access_page.locator("#btn-fetch").or_(
-            access_page.locator("button:has-text('Retrieve Access Info')")
-        ).first
-        fetch_button.wait_for(state="visible", timeout=10000)
+        fetch_button = first_visible_locator(
+            access_page,
+            [
+                "#btn-fetch",
+                "button:has-text('Retrieve Access Info')",
+                "button:has-text('Fetch')",
+                "button:has-text('Get')",
+                "button[type='submit']",
+            ],
+            timeout_ms=10000,
+        )
+        fetch_button.scroll_into_view_if_needed(timeout=1000)
         print(f"✅ {email}: Đã mở trang lấy mã mới và điền email.")
 
     except Exception as e:
+        save_debug_artifacts(access_page, email, "access_prepare_failed")
         print(f"⚠️ {email}: Lỗi chuẩn bị trang lấy mã ({e})")
 
 def _extract_login_code_from_access_page(access_page) -> str | None:
@@ -384,9 +429,18 @@ def _extract_code_digits(text: str | None) -> str | None:
 
 def get_and_paste_code_until_browse(netflix_page, access_page) -> bool:
     try:
-        access_page.locator("#btn-fetch").or_(
-            access_page.locator("button:has-text('Retrieve Access Info')")
-        ).first.click()
+        fetch_button = first_visible_locator(
+            access_page,
+            [
+                "#btn-fetch",
+                "button:has-text('Retrieve Access Info')",
+                "button:has-text('Fetch')",
+                "button:has-text('Get')",
+                "button[type='submit']",
+            ],
+            timeout_ms=5000,
+        )
+        fetch_button.click(force=True)
     except Exception:
         return False
 
