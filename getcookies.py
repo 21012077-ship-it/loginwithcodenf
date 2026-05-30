@@ -104,6 +104,11 @@ def _extract_netflix_message_pw(page) -> str | None:
 def fill_netflix_email(page, email: str) -> bool:
     """Điền email vào mọi biến thể ô email Netflix đang hiển thị."""
     email_selectors = [
+        # Ô email Netflix mới người dùng gửi:
+        # <input type="text" autocomplete="email" name="userLoginId" data-uia="field-userLoginId">
+        "input[data-uia='field-userLoginId']",
+        "input[name='userLoginId'][autocomplete='email']",
+        "input[type='text'][autocomplete='email']",
         "input[name='userLoginId']",
         "input[data-uia='field-email']",
         "input[data-uia='email']",
