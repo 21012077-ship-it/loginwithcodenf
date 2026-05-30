@@ -1,10 +1,5 @@
-89.106.0.55:14650:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-149.19.197.62:38119:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-149.19.197.116:43025:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-199.7.142.49:36959:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-200.229.24.107:19539:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-200.229.24.127:21266:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-23.95.159.251:54753:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-23.95.159.70:38468:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-23.95.159.27:34641:muaproxy697abcb26ab69:zfiqr91adcumqd3n
-143.14.173.124:20838:muaproxy697abcb26ab69:zfiqr91adcumqd3n
+14.239.2223.128:37285:ivxQQR:hlnrDj
+14.188.2523.178:10862:ivxQQR:hlnrDj
+183.80.825.118:35389:MtwmMx:yjJwXm
+14.175.1126.235:58242:YTwZbj:opamKD
+14.188.1024.60:20018:oOCouO:heYSAy

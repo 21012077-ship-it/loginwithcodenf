@@ -18,7 +18,7 @@ DEBUG_FOLDER = "debug_netflix"
 
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 # Chạy quá nhiều phiên cùng lúc rất dễ làm Netflix/recaptcha chặn proxy.
-MAX_CONCURRENT_PROCESSES = int(os.getenv("MAX_CONCURRENT_PROCESSES", "3"))
+MAX_CONCURRENT_PROCESSES = int(os.getenv("MAX_CONCURRENT_PROCESSES", "5"))
 WAIT_OTP_TIMEOUT = int(os.getenv("WAIT_OTP_TIMEOUT", "15000"))
 LOGIN_START_JITTER_SECONDS = float(os.getenv("LOGIN_START_JITTER_SECONDS", "2.5"))
 EMAIL_TYPE_DELAY_MS = int(os.getenv("EMAIL_TYPE_DELAY_MS", "80"))
@@ -583,7 +583,7 @@ def _login_once_to_browse(data_package):
     try:
         with sync_playwright() as p:
             launch_args = {
-                "headless": HEADLESS,
+                "headless": False,
                 "args": [
                     "--start-maximized",
                     "--disable-blink-features=AutomationControlled",
