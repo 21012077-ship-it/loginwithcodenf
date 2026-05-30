@@ -19,8 +19,8 @@ MAX_RETRIES = 3
 MAX_CONCURRENT_PROCESSES = 10
 WAIT_OTP_TIMEOUT = 15000
 
-# Dán chuỗi cookie raw vào đây (sessionid=...;csrftoken=...)
-TUKITECH_COOKIE_STR = "sessionid=pl0oiath76uruttskgm0wplm2bywl7iu;csrftoken=erLAgAKB7YKEzsk4sFtB6DWhtbzvyJJJ"
+# Link lấy mã đăng nhập mới. Trang này chỉ cần điền email và bấm nút lấy mã.
+ACCESS_INFO_URL = "https://zx4nxt_bot_1.opomail.store/login?key=e9ebba329687"
 
 # ==============================================================================
 #                             CÁC HÀM HỖ TRỢ
@@ -137,7 +137,7 @@ def check_profiles_status(page):
         return f"Lỗi check profile: {str(e)}"
 
 # ==============================================================================
-#                           LOGIC CHÍNH NETFLIX & TUKITECH
+#                           LOGIC CHÍNH NETFLIX & LẤY MÃ
 # ==============================================================================
 
 def netflix_continue_wait_otp(page, email: str):
@@ -164,100 +164,91 @@ def netflix_continue_wait_otp(page, email: str):
     except Exception as e:
         return False, f"Error: {str(e)}"
 
-def tukitech_prepare_search(tukitech_page, email: str):
-    """
-    CẬP NHẬT THEO HTML MỚI NHẤT:
-    1. ID Select chuẩn: #condition
-    2. Value chuẩn: netflix_code
-    3. Giữ logic tắt popup và chờ 3s.
-    """
+def access_info_prepare_search(access_page, email: str):
+    """Mở trang lấy mã mới và điền sẵn email cần tìm mã đăng nhập."""
     try:
-        # --- 1. Nạp Cookies ---
-        cookies_to_add = []
-        if TUKITECH_COOKIE_STR:
-            parts = TUKITECH_COOKIE_STR.split(';')
-            for part in parts:
-                if '=' in part:
-                    key, value = part.strip().split('=', 1)
-                    cookies_to_add.append({
-                        "name": key,
-                        "value": value,
-                        "domain": "tukitech.com",
-                        "path": "/"
-                    })
-        if cookies_to_add:
-            tukitech_page.context.add_cookies(cookies_to_add)
-        
-        tukitech_page.goto("https://tukitech.com/email_search/", wait_until="domcontentloaded")
-        
-        # --- 2. TẮT POPUP ---
-        try:
-            popup_btn = tukitech_page.locator("button:has-text('Tôi Đã Hiểu')").first
-            if popup_btn.is_visible(timeout=5000):
-                print(f"⚠️ {email}: Phát hiện Popup -> Click tắt...")
-                popup_btn.click()
-                # Chờ 3s cho lớp mờ biến mất hẳn (QUAN TRỌNG)
-                time.sleep(3)
-        except:
-            pass
+        access_page.goto(ACCESS_INFO_URL, wait_until="domcontentloaded")
 
-        # --- 3. ĐIỀN EMAIL ---
-        try:
-            email_input = tukitech_page.locator("input[name='email']").or_(tukitech_page.locator("input[placeholder='example@domain.com']")).first
-            email_input.wait_for(state="visible", timeout=10000)
-            email_input.click(force=True)
-            email_input.fill(email)
-        except Exception as e:
-            print(f"❌ {email}: Lỗi nhập email ({e})")
-            return
+        email_input = access_page.locator("#email-input").or_(
+            access_page.locator("input[type='email']")
+        ).first
+        email_input.wait_for(state="visible", timeout=15000)
+        email_input.click(force=True)
+        email_input.fill(email)
 
-        # --- 4. CHỌN DROPDOWN (ID = #condition) ---
-        print(f"👉 {email}: Đang chọn 'Netflix: Mã Đăng Nhập'...")
-        
-        try:
-            # Tìm thẻ select theo ID mới chính xác
-            select_el = tukitech_page.locator("#condition")
-            
-            # 1. Chọn bằng Playwright (force=True để xuyên qua mọi che chắn)
-            select_el.select_option(value="netflix_code", force=True)
-            
-            # 2. Bồi thêm Javascript để chắc chắn 100% web nhận lệnh
-            # (Phòng trường hợp web dùng thư viện giao diện ngoài)
-            tukitech_page.evaluate("""
-                () => {
-                    const s = document.getElementById('condition');
-                    if (s) {
-                        s.value = 'netflix_code';
-                        s.dispatchEvent(new Event('change', {bubbles: true}));
-                        s.dispatchEvent(new Event('input', {bubbles: true}));
-                    }
-                }
-            """)
-            
-            # 3. Kiểm tra lại xem đã nhận chưa
-            val = tukitech_page.evaluate("document.getElementById('condition').value")
-            if val == "netflix_code":
-                print(f"✅ {email}: Chọn thành công.")
-            else:
-                print(f"⚠️ {email}: Chọn thất bại. Giá trị hiện tại: {val}")
-
-        except Exception as e:
-            print(f"❌ {email}: Lỗi chọn Dropdown ({e})")
+        fetch_button = access_page.locator("#btn-fetch").or_(
+            access_page.locator("button:has-text('Retrieve Access Info')")
+        ).first
+        fetch_button.wait_for(state="visible", timeout=10000)
+        print(f"✅ {email}: Đã mở trang lấy mã mới và điền email.")
 
     except Exception as e:
-        print(f"⚠️ Lỗi chung hàm Prepare Search: {e}")
+        print(f"⚠️ {email}: Lỗi chuẩn bị trang lấy mã ({e})")
 
-def get_and_paste_code_until_browse(netflix_page, tukitech_page) -> bool:
-    tukitech_page.locator("#search-btn").click()
+def _extract_login_code_from_access_page(access_page) -> str | None:
+    """Lấy chuỗi số mã đăng nhập từ nội dung hiển thị sau khi bấm nút."""
+    candidate_selectors = [
+        "#result",
+        "#results",
+        "#access-info",
+        "#code",
+        "[data-code]",
+        ".result",
+        ".results",
+        ".code",
+        ".alert",
+        ".message",
+        ".card",
+    ]
+
+    for selector in candidate_selectors:
+        try:
+            loc = access_page.locator(selector).first
+            if loc.count() > 0 and loc.is_visible(timeout=500):
+                text = (loc.inner_text(timeout=1000) or "").strip()
+                code = _extract_code_digits(text)
+                if code:
+                    return code
+        except Exception:
+            pass
+
     try:
-        raw_el = tukitech_page.locator("div.bg-light > span.text-dark").first
-        raw_el.wait_for(state="visible", timeout=15000)
-        raw = raw_el.inner_text()
-    except:
+        body_text = access_page.locator("body").inner_text(timeout=1000)
+        return _extract_code_digits(body_text)
+    except Exception:
+        return None
+
+def _extract_code_digits(text: str | None) -> str | None:
+    if not text:
+        return None
+
+    # Ưu tiên mã OTP 4-8 chữ số nằm độc lập để tránh dính số từ nội dung khác.
+    matches = re.findall(r"(?<!\d)\d{4,8}(?!\d)", text)
+    if matches:
+        return matches[-1]
+
+    digits = re.sub(r"\D+", "", text)
+    if len(digits) >= 4:
+        return digits
+    return None
+
+def get_and_paste_code_until_browse(netflix_page, access_page) -> bool:
+    try:
+        access_page.locator("#btn-fetch").or_(
+            access_page.locator("button:has-text('Retrieve Access Info')")
+        ).first.click()
+    except Exception:
         return False
 
-    code_digits = re.sub(r"\D+", "", raw or "")
-    if len(code_digits) < 4:
+    code_digits = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        code_digits = _extract_login_code_from_access_page(access_page)
+        if code_digits and len(code_digits) >= 4:
+            break
+        time.sleep(1)
+
+    if not code_digits or len(code_digits) < 4:
         return False
 
     otp = netflix_page.locator("input[name='challengeOtp']").first
@@ -336,14 +327,14 @@ def _login_once_to_browse(data_package):
                 browser.close()
                 return result
 
-            # Khởi tạo tab Tukitech và dùng Cookie để vào
-            tukitech_page = context.new_page()
-            tukitech_prepare_search(tukitech_page, email)
+            # Khởi tạo tab lấy mã đăng nhập mới và điền email
+            access_page = context.new_page()
+            access_info_prepare_search(access_page, email)
 
             for i in range(MAX_RETRIES):
                 print(f"🔄 {email}: Thử code lần {i+1}...")
                 
-                if get_and_paste_code_until_browse(netflix_page, tukitech_page):
+                if get_and_paste_code_until_browse(netflix_page, access_page):
                     print(f"✅ {email}: ĐÃ VÀO /browse. Đang check profile...")
                     
                     # 1. Check Profile
