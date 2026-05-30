@@ -14,10 +14,13 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 INPUT_FILENAME = "a.txt"
 PROXY_FILENAME = "proxies.txt"
 OUTPUT_FOLDER = "cookies_netflix"
+DEBUG_FOLDER = "debug_netflix"
 
-MAX_RETRIES = 3
-MAX_CONCURRENT_PROCESSES = 10
-WAIT_OTP_TIMEOUT = 15000
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+# Chạy quá nhiều phiên cùng lúc rất dễ làm Netflix/recaptcha chặn proxy.
+MAX_CONCURRENT_PROCESSES = int(os.getenv("MAX_CONCURRENT_PROCESSES", "3"))
+WAIT_OTP_TIMEOUT = int(os.getenv("WAIT_OTP_TIMEOUT", "15000"))
+LOGIN_START_JITTER_SECONDS = float(os.getenv("LOGIN_START_JITTER_SECONDS", "2.5"))
 
 # Link lấy mã đăng nhập mới. Trang này chỉ cần điền email và bấm nút lấy mã.
 ACCESS_INFO_URL = "https://zx4nxt_bot_1.opomail.store/login?key=e9ebba329687"
@@ -72,18 +75,82 @@ def read_lines_from_file(filename: str):
     return list(set(lines)) if filename == INPUT_FILENAME else lines
 
 def parse_proxy(proxy_str: str):
+    """Parse proxy từ các dạng phổ biến.
+
+    Hỗ trợ:
+    - ip:port
+    - ip:port:user:pass
+    - http://ip:port hoặc socks5://ip:port
+    - http://user:pass@ip:port hoặc socks5://user:pass@ip:port
+    """
     if not proxy_str:
         return None
+
+    proxy_str = proxy_str.strip()
+    if not proxy_str:
+        return None
+
+    if "://" in proxy_str:
+        server = proxy_str
+        username = password = None
+        scheme, rest = proxy_str.split("://", 1)
+        if "@" in rest:
+            auth, host_port = rest.rsplit("@", 1)
+            server = f"{scheme}://{host_port}"
+            if ":" in auth:
+                username, password = auth.split(":", 1)
+        config = {"server": server}
+        if username is not None:
+            config["username"] = username
+            config["password"] = password or ""
+        return config
+
     parts = proxy_str.split(':')
     if len(parts) == 2:
         return {"server": f"http://{parts[0]}:{parts[1]}"}
-    elif len(parts) == 4:
+    if len(parts) >= 4:
+        # Password đôi khi có dấu ':'; ghép phần còn lại lại để không parse sai.
         return {
             "server": f"http://{parts[0]}:{parts[1]}",
             "username": parts[2],
-            "password": parts[3]
+            "password": ":".join(parts[3:])
         }
     return None
+
+
+def _safe_filename(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)[:120] or "unknown"
+
+def save_debug_artifacts(page, email: str, reason: str):
+    """Lưu HTML/screenshot khi Netflix trả lỗi để biết đang bị chặn hay selector sai."""
+    try:
+        os.makedirs(DEBUG_FOLDER, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"{stamp}_{_safe_filename(email)}_{_safe_filename(reason)}"
+        html_path = os.path.join(DEBUG_FOLDER, f"{base}.html")
+        png_path = os.path.join(DEBUG_FOLDER, f"{base}.png")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(page.content())
+        try:
+            page.screenshot(path=png_path, full_page=True, timeout=5000)
+        except Exception:
+            pass
+        print(f"🧾 {email}: Đã lưu debug tại {html_path}")
+    except Exception as e:
+        print(f"⚠️ {email}: Không lưu được debug ({e})")
+
+def is_netflix_proxy_block_message(message: str | None) -> bool:
+    if not message:
+        return False
+    normalized = " ".join(message.lower().split())
+    blocked_markers = [
+        "đã xảy ra lỗi",
+        "vui lòng thử lại trong vài phút",
+        "something went wrong",
+        "please try again later",
+        "recaptcha",
+    ]
+    return any(marker in normalized for marker in blocked_markers)
 
 def _extract_netflix_message_pw(page) -> str | None:
     selectors = [
@@ -222,7 +289,10 @@ def netflix_continue_wait_otp(page, email: str):
                 return False, "SKIPPED: Mail yêu cầu mật khẩu"
             msg = _extract_netflix_message_pw(page)
             if msg:
+                reason = "netflix_proxy_block" if is_netflix_proxy_block_message(msg) else "netflix_error"
+                save_debug_artifacts(page, email, reason)
                 return False, f"SKIPPED: Lỗi Netflix ({msg})"
+            save_debug_artifacts(page, email, "otp_timeout")
             return False, "SKIPPED: Không hiện ô nhập mã (Timeout)"
 
     except Exception as e:
@@ -378,13 +448,16 @@ def _login_once_to_browse(data_package):
             if proxy_str:
                 print(f"🌍 {email}: Đang chạy với Proxy {proxy_str}")
 
+            if LOGIN_START_JITTER_SECONDS > 0:
+                time.sleep(random.uniform(0, LOGIN_START_JITTER_SECONDS))
+
             ok, msg = netflix_continue_wait_otp(netflix_page, email)
             if not ok:
                 print(f"❌ {email}: {msg}")
                 # --- SỬA ĐỔI: NẾU LỖI TIMEOUT THÌ ĐÁNH DẤU LƯU ---
-                if "Timeout" in msg or "Target closed" in msg:
+                if "Timeout" in msg or "Target closed" in msg or is_netflix_proxy_block_message(msg):
                     result["Status"] = "ProxyError" # Đặt trạng thái riêng
-                    result["Note"] = "proxy có vấn đề kiểm tra sau"
+                    result["Note"] = "Netflix chặn IP/proxy hoặc rate-limit; thử proxy dân cư sạch, giảm luồng, đổi IP rồi chạy lại"
                 else:
                     result["Note"] = msg
                 # -------------------------------------------------
@@ -448,7 +521,7 @@ def _login_once_to_browse(data_package):
         # Nếu lỗi hệ thống lớn mà có timeout cũng lưu luôn
         if "Timeout" in str(e):
              result["Status"] = "ProxyError"
-             result["Note"] = "proxy có vấn đề kiểm tra sau"
+             result["Note"] = "Netflix chặn IP/proxy hoặc proxy timeout; kiểm tra lại proxy"
         else:
              result["Note"] = str(e)
         return result
